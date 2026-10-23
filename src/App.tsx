@@ -2009,9 +2009,49 @@ const AdminPanel = ({ records, users, onUpdateRole, onUpdateShift, onUpdateLaten
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [user, setUser] = useState<UserProfile | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('cotrac_custom_user');
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed?.uid && !parsed.uid.startsWith('demo-user-')) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to parse custom user session:", e);
+    }
+    return null;
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    try {
+      const savedUser = localStorage.getItem('cotrac_custom_user');
+      return !savedUser;
+    } catch {
+      return true;
+    }
+  });
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    try {
+      const hash = window.location.hash.replace('#', '').trim();
+      const validTabs = ['dashboard', 'terminal', 'attendance', 'reports', 'admin', 'profile'];
+      if (hash && validTabs.includes(hash)) {
+        return hash;
+      }
+      const savedTab = localStorage.getItem('cotrac_active_tab');
+      if (savedTab && validTabs.includes(savedTab)) {
+        return savedTab;
+      }
+      const savedUser = localStorage.getItem('cotrac_custom_user');
+      if (savedUser) {
+        const parsed = JSON.parse(savedUser);
+        if (parsed?.role === 'sign-in') return 'terminal';
+        if (parsed?.role === 'admin') return 'admin';
+        if (parsed?.role === 'staff') return 'attendance';
+      }
+    } catch {}
+    return 'attendance';
+  });
   const [records, setRecords] = useState<AttendanceRecord[]>(() => {
     try {
       const saved = localStorage.getItem('cotrac_cached_records');
@@ -2145,12 +2185,28 @@ export default function App() {
     }
   }, [user]);
 
-  // Redirect staff role from dashboard to profile/history
+  // Immediate tab event listeners and sync on initial page load
   useEffect(() => {
-    if (user && user.role === 'staff' && activeTab === 'dashboard') {
-      setActiveTab('attendance');
-    }
-  }, [user, activeTab]);
+    const syncTabFromLocation = () => {
+      try {
+        const hash = window.location.hash.replace('#', '').trim();
+        const validTabs = ['dashboard', 'terminal', 'attendance', 'reports', 'admin', 'profile'];
+        if (hash && validTabs.includes(hash)) {
+          setActiveTab(hash);
+          localStorage.setItem('cotrac_active_tab', hash);
+        }
+      } catch {}
+    };
+
+    window.addEventListener('hashchange', syncTabFromLocation);
+    window.addEventListener('popstate', syncTabFromLocation);
+    syncTabFromLocation();
+
+    return () => {
+      window.removeEventListener('hashchange', syncTabFromLocation);
+      window.removeEventListener('popstate', syncTabFromLocation);
+    };
+  }, []);
 
   // Auth Listener (Supabase Auth & Local Session)
   useEffect(() => {
@@ -2291,25 +2347,51 @@ export default function App() {
     };
   }, [user?.uid, user?.role]);
 
+  // Validate tab permissions when user role loads or changes (preserves chosen tab if allowed)
   useEffect(() => {
-    if (user) {
-      if (user.role === 'sign-in') {
-        setActiveTab('terminal');
-      } else if (user.role === 'admin') {
-        setActiveTab('admin');
-      } else {
-        setActiveTab('attendance');
+    if (!user) return;
+    const validTabsForRole: Record<UserRole, string[]> = {
+      admin: ['dashboard', 'terminal', 'attendance', 'reports', 'admin', 'profile'],
+      'sign-in': ['terminal', 'attendance', 'reports', 'profile'],
+      staff: ['attendance', 'profile']
+    };
+    const allowed = validTabsForRole[user.role] || ['attendance', 'profile'];
+    if (!allowed.includes(activeTab)) {
+      const defaultTab = user.role === 'admin' ? 'admin' : (user.role === 'sign-in' ? 'terminal' : 'attendance');
+      setActiveTab(defaultTab);
+      localStorage.setItem('cotrac_active_tab', defaultTab);
+      if (window.location.hash !== `#${defaultTab}`) {
+        window.history.replaceState(null, '', `#${defaultTab}`);
       }
     }
-  }, [user?.role]);
+  }, [user?.role, activeTab]);
 
   const handleCustomLogin = (loggedInUser: UserProfile) => {
     setUser(loggedInUser);
     localStorage.setItem('cotrac_custom_user', JSON.stringify(loggedInUser));
+    const savedTab = localStorage.getItem('cotrac_active_tab');
+    const validTabsForRole: Record<UserRole, string[]> = {
+      admin: ['dashboard', 'terminal', 'attendance', 'reports', 'admin', 'profile'],
+      'sign-in': ['terminal', 'attendance', 'reports', 'profile'],
+      staff: ['attendance', 'profile']
+    };
+    const allowed = validTabsForRole[loggedInUser.role] || ['attendance', 'profile'];
+    const targetTab = (savedTab && allowed.includes(savedTab)) 
+      ? savedTab 
+      : (loggedInUser.role === 'admin' ? 'admin' : (loggedInUser.role === 'sign-in' ? 'terminal' : 'attendance'));
+    setActiveTab(targetTab);
+    localStorage.setItem('cotrac_active_tab', targetTab);
+    window.history.replaceState(null, '', `#${targetTab}`);
   };
 
   const handleLogout = async () => {
     localStorage.removeItem('cotrac_custom_user');
+    localStorage.removeItem('cotrac_active_tab');
+    try {
+      if (window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } catch {}
     setUser(null);
     setSelectedStaff(null);
     const supabase = getSupabase();
@@ -2525,6 +2607,12 @@ export default function App() {
     } else if (pinAction === 'unlockProfile') {
       setIsProfileUnlocked(true);
       setActiveTab('profile');
+      try {
+        localStorage.setItem('cotrac_active_tab', 'profile');
+        if (window.location.hash !== '#profile') {
+          window.history.replaceState(null, '', '#profile');
+        }
+      } catch {}
     }
     setPinAction(null);
   };
@@ -2934,6 +3022,12 @@ export default function App() {
     }
     
     setActiveTab(newTab);
+    try {
+      localStorage.setItem('cotrac_active_tab', newTab);
+      if (window.location.hash !== `#${newTab}`) {
+        window.history.replaceState(null, '', `#${newTab}`);
+      }
+    } catch {}
   };
 
   return (
