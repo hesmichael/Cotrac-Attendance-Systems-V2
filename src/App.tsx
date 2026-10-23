@@ -2208,6 +2208,14 @@ export default function App() {
     };
   }, []);
 
+  // Safe timeout to guarantee loading never hangs on blank screen or spinner
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Auth Listener (Supabase Auth & Local Session)
   useEffect(() => {
     // 1. Check for custom logged-in user in localStorage first
